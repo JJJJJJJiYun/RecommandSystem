@@ -7,8 +7,8 @@ class CollaborativeFiltering(object):
     TopK = 20
 
     def __init__(self):
-        # user-item 表
-        self.user_items_dict = dict()
+        # user-item 评分表
+        self.user_items_score_dict = dict()
         # user-item 倒排表
         self.item_users_dict = dict()
         # user_cf 计算出的 user 对 item 的兴趣值表
@@ -18,11 +18,11 @@ class CollaborativeFiltering(object):
 
     def load_test_data(self):
         """导入测试数据集，测试算法正确性"""
-        self.user_items_dict = {
-            'A': ['a', 'b', 'd'],
-            'B': ['a', 'c'],
-            'C': ['b', 'e'],
-            'D': ['c', 'd', 'e']
+        self.user_items_score_dict = {
+            'A': {'a': 1.0, 'b': 1.0, 'd': 1.0},
+            'B': {'a': 1.0, 'c': 1.0},
+            'C': {'b': 1.0, 'e': 1.0},
+            'D': {'c': 1.0, 'd': 1.0, 'e': 1.0}
         }
         self.item_users_dict = {
             'a': ['A', 'B'],
@@ -34,18 +34,19 @@ class CollaborativeFiltering(object):
 
     def load_movie_data(self, filename):
         """导入文件，加载需要的信息到内存中"""
-        user_movie_file = pd.read_csv(filename, usecols=['userId', 'movieId'])
+        user_movie_file = pd.read_csv(filename, usecols=['userId', 'movieId', 'rating'])
         for _, row in user_movie_file.iterrows():
             user_id = str(row['userId'])
             movie_id = str(row['movieId'])
-            if user_id not in self.user_items_dict:
-                self.user_items_dict[user_id] = set()
-            self.user_items_dict[user_id].add(movie_id)
+            rating = float(row['rating'])
             if movie_id not in self.item_users_dict:
                 self.item_users_dict[movie_id] = set()
             self.item_users_dict[movie_id].add(user_id)
+            if user_id not in self.user_items_score_dict:
+                self.user_items_score_dict[user_id] = dict()
+            self.user_items_score_dict[user_id][movie_id] = rating
         print("load movie file succ")
-        print("user count:", len(self.user_items_dict))
+        print("user count:", len(self.user_items_score_dict))
         print("item count:", len(self.item_users_dict))
 
     def user_cf(self):
@@ -64,7 +65,7 @@ class CollaborativeFiltering(object):
                 for user2, euclidean_distance in euclidean_distances[0:self.TopK]:
                     if user2 in users:
                         # 只有欧氏距离与该 user 在一定范围内的 user 对这个 item 有浏览记录，才会加入计算当中
-                        score += euclidean_distance
+                        score += euclidean_distance * self.user_items_score_dict[user2][item]
                 self.user_cf_users_items_interest_dict[user1][item] = score
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user1] = (min_score, max_score)
@@ -80,9 +81,9 @@ class CollaborativeFiltering(object):
     def calculate_users_euclidean_distance(self):
         """计算 user 间的欧式距离"""
         users_euclidean_distance_dict = dict()
-        for user1, _ in self.user_items_dict.items():
+        for user1, _ in self.user_items_score_dict.items():
             users_euclidean_distance_dict[user1] = dict()
-            for user2, _ in self.user_items_dict.items():
+            for user2, _ in self.user_items_score_dict.items():
                 # 对于每一个 user，计算他和其他所有 user 的欧式距离
                 count = 0
                 for item, users in self.item_users_dict.items():
@@ -90,7 +91,7 @@ class CollaborativeFiltering(object):
                     if user1 in users and user2 in users:
                         count += 1
                 euclidean_distance = count / (
-                        len(self.user_items_dict[user1]) * len(self.user_items_dict[user2])) ** 0.5
+                        len(self.user_items_score_dict[user1]) * len(self.user_items_score_dict[user2])) ** 0.5
                 users_euclidean_distance_dict[user1][user2] = euclidean_distance
             # 排序，并把与自身的欧氏距离去除
             users_euclidean_distance_dict[user1] = sorted(users_euclidean_distance_dict[user1].items(),
@@ -106,14 +107,14 @@ class CollaborativeFiltering(object):
         # 计算 user 对 item 的兴趣排行
         # 统计分数的最大最小值来进行归一化
         user_min_max_score_dict = dict()
-        for user, items in self.user_items_dict.items():
+        for user, item_score_dict in self.user_items_score_dict.items():
             self.item_cf_users_items_interest_dict[user] = dict()
             min_score, max_score = sys.maxsize, -sys.maxsize
             for item1, _ in self.item_users_dict.items():
                 score = 0
                 for item2, nearest_score in item_nearest_score_dict[item1][0:self.TopK]:
-                    if item2 in items:
-                        score += nearest_score
+                    if item2 in item_score_dict.keys():
+                        score += nearest_score * self.user_items_score_dict[user][item2]
                 self.item_cf_users_items_interest_dict[user][item1] = score
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user] = (min_score, max_score)
@@ -134,8 +135,8 @@ class CollaborativeFiltering(object):
                 if item1 == item2:
                     continue
                 both_count = 0
-                for _, items in self.user_items_dict.items():
-                    if item1 in items and item2 in items:
+                for _, item_score_dict in self.user_items_score_dict.items():
+                    if item1 in item_score_dict.keys() and item2 in item_score_dict.keys():
                         both_count += 1
                 score = both_count / ((len(users1) * len(users2)) ** 0.5)
                 item_nearest_score_dict[item1][item2] = score
