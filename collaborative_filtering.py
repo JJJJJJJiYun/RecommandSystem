@@ -1,6 +1,5 @@
 import sys
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -48,14 +47,18 @@ class CollaborativeFiltering(object):
             'A': {'a': 1.0, 'b': 1.0, 'd': 1.0},
             'B': {'a': 1.0, 'c': 1.0},
             'C': {'b': 1.0, 'e': 1.0},
-            'D': {'c': 1.0, 'd': 1.0, 'e': 1.0}
+            'D': {'c': 1.0, 'd': 1.0, 'e': 1.0},
+            'E': {'a': 1.0, 'b': 1.0, 'd': 1.0},
+            'F': {'a': 1.0, 'c': 1.0},
+            'G': {'b': 1.0, 'e': 1.0},
+            'H': {'c': 1.0, 'd': 1.0, 'e': 1.0},
         }
         self.item_users_dict = {
-            'a': ['A', 'B'],
-            'b': ['A', 'C'],
-            'c': ['B', 'D'],
-            'd': ['A', 'D'],
-            'e': ['C', 'D']
+            'a': ['A', 'B', 'E', 'F'],
+            'b': ['A', 'C', 'E', 'G'],
+            'c': ['B', 'D', 'F', 'H'],
+            'd': ['A', 'D', 'E', 'H'],
+            'e': ['C', 'D', 'G', 'H']
         }
 
     def load_movie_data(self, filename):
@@ -85,13 +88,13 @@ class CollaborativeFiltering(object):
         # 计算 user 对 item 的兴趣排行
         # 统计分数的最大最小值来进行归一化
         user_min_max_score_dict = dict()
-        for user1, euclidean_distances in users_euclidean_distance_dict.items():
+        for user1, user_euclidean_distance_tuples in users_euclidean_distance_dict.items():
             self.user_cf_users_items_interest_dict[user1] = dict()
             min_score, max_score = sys.maxsize, -sys.maxsize
             for item, users in self.item_users_dict.items():
                 # 计算该 user 对每个 item 的兴趣值
                 score = 0
-                for user2, euclidean_distance in euclidean_distances[0:self.TopK]:
+                for user2, euclidean_distance in user_euclidean_distance_tuples[0:self.TopK]:
                     if user2 in users:
                         # 只有欧氏距离与该 user 在一定范围内的 user 对这个 item 有浏览记录，才会加入计算当中
                         score += euclidean_distance * self.user_items_score_dict[user2][item]
@@ -140,6 +143,9 @@ class CollaborativeFiltering(object):
             users_euclidean_distance_dict[user1] = dict()
             for user2 in self.cluster_user_result[self.user_cluster_result[user1]]:
                 # 对于每一个 user，计算他在同一聚类中的所有 user 的欧式距离
+                if user1 == user2:
+                    # 如果是自己不计算
+                    continue
                 count = 0
                 for item, users in self.item_users_dict.items():
                     # 计算出他们的公共 item 数量
@@ -148,9 +154,9 @@ class CollaborativeFiltering(object):
                 euclidean_distance = count / (
                         len(self.user_items_score_dict[user1]) * len(self.user_items_score_dict[user2])) ** 0.5
                 users_euclidean_distance_dict[user1][user2] = euclidean_distance
-            # 排序，并把与自身的欧氏距离去除
+            # 排序
             users_euclidean_distance_dict[user1] = sorted(users_euclidean_distance_dict[user1].items(),
-                                                          key=lambda d: d[1], reverse=True)[1:]
+                                                          key=lambda d: d[1], reverse=True)
         print("calculate user's euclidean distance finished")
         # print(users_euclidean_distance_dict)
         return users_euclidean_distance_dict
@@ -172,7 +178,7 @@ class CollaborativeFiltering(object):
             item_nearest_score_dict[item1] = sorted(item_nearest_score_dict[item1].items(),
                                                     key=lambda d: d[1], reverse=True)
         print("calculate item nearest score finished")
-        print(item_nearest_score_dict)
+        # print(item_nearest_score_dict)
         return item_nearest_score_dict
 
     def k_means_clustering(self):
@@ -183,12 +189,12 @@ class CollaborativeFiltering(object):
                 for
                 _, item_score_dict in self.user_items_score_dict.items()]
         pca_data = pca.fit_transform(data)
-        plt.scatter(pca_data[:, 0], pca_data[:, 1])
-        plt.show()
+        # plt.scatter(pca_data[:, 0], pca_data[:, 1])
+        # plt.show()
         # k-means 聚类
         y_pred = KMeans(n_clusters=4).fit_predict(pca_data)
-        plt.scatter(pca_data[:, 0], pca_data[:, 1], c=y_pred)
-        plt.show()
+        # plt.scatter(pca_data[:, 0], pca_data[:, 1], c=y_pred)
+        # plt.show()
         # 收集聚类结果
         for i, (user, _) in enumerate(self.user_items_score_dict.items()):
             self.user_cluster_result[user] = y_pred[i]
