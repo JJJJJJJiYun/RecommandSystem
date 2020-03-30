@@ -1,8 +1,12 @@
 import sys
+import time
 
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+
+from utils.redis import redis
+from utils.redis_key import *
 
 
 class CollaborativeFiltering(object):
@@ -14,32 +18,32 @@ class CollaborativeFiltering(object):
         self.user_items_score_dict = dict()
         # user-item 倒排表
         self.item_users_dict = dict()
-        # user_cf 计算出的 user 对 item 的兴趣值表
-        self.user_cf_users_items_interest_dict = dict()
-        # item_cf 计算出的 user 对 item 的兴趣值表
-        self.item_cf_users_items_interest_dict = dict()
-        # user-cluster 聚类结果
-        self.user_cluster_result = dict()
-        # cluster-user 聚类结果
-        self.cluster_user_result = dict()
+
+    def calculate(self):
+        """后台计算任务"""
+        while True:
+            # 加载数据
+            self.load_data()
+            # 进行计算
+            self.user_cf()
+            self.item_cf()
+            time.sleep(60 * 30)
 
     def load_data(self):
         """加载数据"""
-        self.load_movie_data("ratings.csv")
-        # self.load_test_data()
-
-    def collaborative_filtering(self):
-        """协同过滤"""
-        self.user_cf()
-        self.item_cf()
-
-    def recommand(self, user_id, n):
-        """推荐"""
-        item_cf_item_score_dict = {item: score for item, score in self.item_cf_users_items_interest_dict[user_id]}
-        item_score_dict = dict()
-        for item, score in self.user_cf_users_items_interest_dict[user_id]:
-            item_score_dict[item] = (score + item_cf_item_score_dict[item]) / 2
-        return sorted(item_score_dict.items(), key=lambda d: d[1], reverse=True)[0:n]
+        keys = redis.keys(key_of_user_rating_data('*'))
+        for key in keys:
+            user_id = key.split('_', 3)[2].split(':')[1]
+            item_scores = redis.zrange(key, 0, -1, withscores=True)
+            for item_id, score in item_scores:
+                if item_id not in self.item_users_dict:
+                    self.item_users_dict[item_id] = set()
+                self.item_users_dict[item_id].add(user_id)
+                if user_id not in self.user_items_score_dict:
+                    self.user_items_score_dict[user_id] = dict()
+                self.user_items_score_dict[user_id][item_id] = score
+        print("load data succ, users: %d, items: %d" % (len(self.user_items_score_dict), len(self.item_users_dict)))
+        # print(self.user_items_score_dict)
 
     def load_test_data(self):
         """导入测试数据集，测试算法正确性"""
@@ -82,14 +86,16 @@ class CollaborativeFiltering(object):
     def user_cf(self):
         """基于用户的协同过滤算法"""
         # k-means 聚类
-        self.k_means_clustering()
+        user_cluster_result, cluster_user_result = self.k_means_clustering()
         # 计算 user 间的欧式距离（只有同聚类下的 user 会被计算）
-        users_euclidean_distance_dict = self.calculate_users_euclidean_distance()
+        users_euclidean_distance_dict = self.calculate_users_euclidean_distance(user_cluster_result,
+                                                                                cluster_user_result)
         # 计算 user 对 item 的兴趣排行
         # 统计分数的最大最小值来进行归一化
-        user_min_max_score_dict = dict()
+        users_min_max_score_dict = dict()
+        users_items_interest_dict = dict()
         for user1, user_euclidean_distance_tuples in users_euclidean_distance_dict.items():
-            self.user_cf_users_items_interest_dict[user1] = dict()
+            users_items_interest_dict[user1] = dict()
             min_score, max_score = sys.maxsize, -sys.maxsize
             for item, users in self.item_users_dict.items():
                 # 计算该 user 对每个 item 的兴趣值
@@ -98,17 +104,17 @@ class CollaborativeFiltering(object):
                     if user2 in users:
                         # 只有欧氏距离与该 user 在一定范围内的 user 对这个 item 有浏览记录，才会加入计算当中
                         score += euclidean_distance * self.user_items_score_dict[user2][item]
-                self.user_cf_users_items_interest_dict[user1][item] = score
+                users_items_interest_dict[user1][item] = score
                 min_score, max_score = min(min_score, score), max(max_score, score)
-            user_min_max_score_dict[user1] = (min_score, max_score)
-            self.user_cf_users_items_interest_dict[user1] = sorted(
-                self.user_cf_users_items_interest_dict[user1].items(),
-                key=lambda d: d[1], reverse=True)
+            users_min_max_score_dict[user1] = (min_score, max_score)
         print("calculate user's interest in items finished")
         # print(self.user_cf_users_items_interest_dict)
         # 归一化
-        self.user_cf_users_items_interest_dict = self.normalize(self.user_cf_users_items_interest_dict,
-                                                                user_min_max_score_dict)
+        users_items_interest_dict = self.normalize(users_items_interest_dict, users_min_max_score_dict)
+        # 结果写入 redis
+        for user, item_score_dict in users_items_interest_dict.items():
+            redis.zadd(key_of_user_cf_user_item_interest(user), item_score_dict)
+            redis.expire(key_of_user_cf_user_item_interest(user), 20)
 
     def item_cf(self):
         """基于物品的协同过滤算法"""
@@ -117,31 +123,33 @@ class CollaborativeFiltering(object):
         # 计算 user 对 item 的兴趣排行
         # 统计分数的最大最小值来进行归一化
         user_min_max_score_dict = dict()
+        users_items_interest_dict = dict()
         for user, item_score_dict in self.user_items_score_dict.items():
-            self.item_cf_users_items_interest_dict[user] = dict()
+            users_items_interest_dict[user] = dict()
             min_score, max_score = sys.maxsize, -sys.maxsize
             for item1, _ in self.item_users_dict.items():
                 score = 0
                 for item2, nearest_score in item_nearest_score_dict[item1][0:self.TopK]:
                     if item2 in item_score_dict.keys():
                         score += nearest_score * self.user_items_score_dict[user][item2]
-                self.item_cf_users_items_interest_dict[user][item1] = score
+                users_items_interest_dict[user][item1] = score
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user] = (min_score, max_score)
-            self.item_cf_users_items_interest_dict[user] = sorted(self.item_cf_users_items_interest_dict[user].items(),
-                                                                  key=lambda d: d[1], reverse=True)
         print("calculate user's interest in items finished")
         # print(self.item_cf_users_items_interest_dict)
         # 归一化
-        self.item_cf_users_items_interest_dict = self.normalize(self.item_cf_users_items_interest_dict,
-                                                                user_min_max_score_dict)
+        users_items_interest_dict = self.normalize(users_items_interest_dict, user_min_max_score_dict)
+        # 结果写入 redis
+        for user, item_score_dict in users_items_interest_dict.items():
+            redis.zadd(key_of_item_cf_user_item_interest(user), item_score_dict)
+            redis.expire(key_of_item_cf_user_item_interest(user), 20)
 
-    def calculate_users_euclidean_distance(self):
+    def calculate_users_euclidean_distance(self, user_cluster_result, cluster_user_result):
         """计算 user 间的欧式距离"""
         users_euclidean_distance_dict = dict()
         for user1, _ in self.user_items_score_dict.items():
             users_euclidean_distance_dict[user1] = dict()
-            for user2 in self.cluster_user_result[self.user_cluster_result[user1]]:
+            for user2 in cluster_user_result[user_cluster_result[user1]]:
                 # 对于每一个 user，计算他在同一聚类中的所有 user 的欧式距离
                 if user1 == user2:
                     # 如果是自己不计算
@@ -183,6 +191,7 @@ class CollaborativeFiltering(object):
 
     def k_means_clustering(self):
         """K-means 聚类"""
+        user_cluster_result, cluster_user_result = dict(), dict()
         # 将 user 对每个 item 的评分降到二维
         pca = PCA(n_components=2)
         data = [[item_score_dict[item] if item in item_score_dict else 0 for item, _ in self.item_users_dict.items()]
@@ -197,24 +206,25 @@ class CollaborativeFiltering(object):
         # plt.show()
         # 收集聚类结果
         for i, (user, _) in enumerate(self.user_items_score_dict.items()):
-            self.user_cluster_result[user] = y_pred[i]
-            if y_pred[i] not in self.cluster_user_result:
-                self.cluster_user_result[y_pred[i]] = list()
-            self.cluster_user_result[y_pred[i]].append(user)
-        # print(self.cluster_user_result)
-        # print(self.user_cluster_result)
+            user_cluster_result[user] = y_pred[i]
+            if y_pred[i] not in cluster_user_result:
+                cluster_user_result[y_pred[i]] = list()
+            cluster_user_result[y_pred[i]].append(user)
+        # print(cluster_user_result)
+        # print(user_cluster_result)
         print("k-means clustering succ")
+        return user_cluster_result, cluster_user_result
 
     @staticmethod
     def normalize(users_items_interest_dict, user_min_max_score_dict):
         """归一化"""
-        for user, items_scores in users_items_interest_dict.items():
+        for user, item_score_dict in users_items_interest_dict.items():
             min_score, max_score = user_min_max_score_dict[user]
-            for i, (item, score) in enumerate(items_scores):
+            for item, score in item_score_dict.items():
                 if max_score - min_score == 0:
-                    users_items_interest_dict[user][i] = (item, 1)
+                    users_items_interest_dict[user][item] = 1
                 else:
-                    users_items_interest_dict[user][i] = (item, (score - min_score) / (max_score - min_score))
+                    users_items_interest_dict[user][item] = (score - min_score) / (max_score - min_score)
         print("normalizatoin finished")
         # print(user_min_max_score_dict)
         # print(users_items_interest_dict)
