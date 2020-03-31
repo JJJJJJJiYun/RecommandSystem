@@ -1,2 +1,1 @@
-# CollaborativeFiltering
-协同过滤算法的 python 实现
+# 推荐系统算法部分
