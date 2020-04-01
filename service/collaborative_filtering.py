@@ -24,10 +24,12 @@ class CollaborativeFiltering(object):
         while True:
             # 加载数据
             self.load_data()
-            # 进行计算
-            self.user_cf()
-            self.item_cf()
-            time.sleep(60 * 30)
+            if len(self.user_items_score_dict) > 1 and len(self.item_users_dict):
+                # 进行计算
+                self.user_cf()
+                self.item_cf()
+            else:
+                time.sleep(30)
 
     def load_data(self):
         """加载数据"""
@@ -222,9 +224,11 @@ class CollaborativeFiltering(object):
             min_score, max_score = user_min_max_score_dict[user]
             for item, score in item_score_dict.items():
                 if max_score - min_score == 0:
-                    users_items_interest_dict[user][item] = 1
+                    the_score = max_score
                 else:
-                    users_items_interest_dict[user][item] = (score - min_score) / (max_score - min_score)
+                    the_score = (score - min_score) / (max_score - min_score)
+                if the_score != 0:
+                    users_items_interest_dict[user][item] = the_score
         print("normalizatoin finished")
         # print(user_min_max_score_dict)
         # print(users_items_interest_dict)
