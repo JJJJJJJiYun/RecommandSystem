@@ -5,7 +5,7 @@ from service.collaborative_filtering import CollaborativeFiltering
 
 if __name__ == '__main__':
     cf = CollaborativeFiltering()
-    thread_cf = Thread(target=cf.calculate)
+    thread_cf = Thread(target=cf.calculate, args=[True])
     thread_cf.start()
     try:
         while True:

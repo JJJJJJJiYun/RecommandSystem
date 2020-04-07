@@ -18,18 +18,31 @@ class CollaborativeFiltering(object):
         self.user_items_score_dict = dict()
         # user-item 倒排表
         self.item_users_dict = dict()
+        # user cf 的 user 打分结果
+        self.user_cf_users_items_interest_dict = dict()
+        # item cf 的 user 打分结果
+        self.item_cf_users_items_interest_dict = dict()
 
-    def calculate(self):
+    def calculate(self, is_evaluate=False):
         """后台计算任务"""
         while True:
             # 加载数据
-            self.load_data()
+            if is_evaluate:
+                self.load_movie_data("ratings.csv")
+            else:
+                self.load_data()
             if len(self.user_items_score_dict) > 1 and len(self.item_users_dict):
                 # 进行计算
                 self.user_cf()
-                self.item_cf()
+                # self.item_cf()
             else:
                 time.sleep(30)
+            if is_evaluate:
+                mae_score, rmse_score = self.evaluate(self.user_cf_users_items_interest_dict)
+                print("user cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
+                # mae_score, rmse_score = self.evaluate(self.item_cf_users_items_interest_dict)
+                # print("item cf mae score: %d, rmse score: %d" % (mae_score, rmse_score))
+                exit(0)
 
     def load_data(self):
         """加载数据"""
@@ -95,9 +108,8 @@ class CollaborativeFiltering(object):
         # 计算 user 对 item 的兴趣排行
         # 统计分数的最大最小值来进行归一化
         users_min_max_score_dict = dict()
-        users_items_interest_dict = dict()
         for user1, user_euclidean_distance_tuples in users_euclidean_distance_dict.items():
-            users_items_interest_dict[user1] = dict()
+            self.user_cf_users_items_interest_dict[user1] = dict()
             min_score, max_score = sys.maxsize, -sys.maxsize
             for item, users in self.item_users_dict.items():
                 # 计算该 user 对每个 item 的兴趣值
@@ -106,15 +118,16 @@ class CollaborativeFiltering(object):
                     if user2 in users:
                         # 只有欧氏距离与该 user 在一定范围内的 user 对这个 item 有浏览记录，才会加入计算当中
                         score += euclidean_distance * self.user_items_score_dict[user2][item]
-                users_items_interest_dict[user1][item] = score
+                self.user_cf_users_items_interest_dict[user1][item] = score
                 min_score, max_score = min(min_score, score), max(max_score, score)
             users_min_max_score_dict[user1] = (min_score, max_score)
         print("calculate user's interest in items finished")
         # print(self.user_cf_users_items_interest_dict)
         # 归一化
-        users_items_interest_dict = self.normalize(users_items_interest_dict, users_min_max_score_dict)
+        self.user_cf_users_items_interest_dict = self.normalize(self.user_cf_users_items_interest_dict,
+                                                                users_min_max_score_dict)
         # 结果写入 redis
-        for user, item_score_dict in users_items_interest_dict.items():
+        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
             redis.zadd(key_of_user_cf_user_item_interest(user), item_score_dict)
             redis.expire(key_of_user_cf_user_item_interest(user), 20)
 
@@ -125,24 +138,24 @@ class CollaborativeFiltering(object):
         # 计算 user 对 item 的兴趣排行
         # 统计分数的最大最小值来进行归一化
         user_min_max_score_dict = dict()
-        users_items_interest_dict = dict()
         for user, item_score_dict in self.user_items_score_dict.items():
-            users_items_interest_dict[user] = dict()
+            self.item_cf_users_items_interest_dict[user] = dict()
             min_score, max_score = sys.maxsize, -sys.maxsize
             for item1, _ in self.item_users_dict.items():
                 score = 0
                 for item2, nearest_score in item_nearest_score_dict[item1][0:self.TopK]:
                     if item2 in item_score_dict.keys():
                         score += nearest_score * self.user_items_score_dict[user][item2]
-                users_items_interest_dict[user][item1] = score
+                self.item_cf_users_items_interest_dict[user][item1] = score
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user] = (min_score, max_score)
         print("calculate user's interest in items finished")
         # print(self.item_cf_users_items_interest_dict)
         # 归一化
-        users_items_interest_dict = self.normalize(users_items_interest_dict, user_min_max_score_dict)
+        self.item_cf_users_items_interest_dict = self.normalize(self.item_cf_users_items_interest_dict,
+                                                                user_min_max_score_dict)
         # 结果写入 redis
-        for user, item_score_dict in users_items_interest_dict.items():
+        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
             redis.zadd(key_of_item_cf_user_item_interest(user), item_score_dict)
             redis.expire(key_of_item_cf_user_item_interest(user), 20)
 
@@ -233,3 +246,18 @@ class CollaborativeFiltering(object):
         # print(user_min_max_score_dict)
         # print(users_items_interest_dict)
         return users_items_interest_dict
+
+    def evaluate(self, users_items_interst_dict):
+        mae_scores = list()
+        rmse_scrores = list()
+        for user, item_score_dict in self.user_items_score_dict.items():
+            n1 = 0
+            n2 = 0
+            for item, score in users_items_interst_dict[user].items():
+                n1 += (abs(score - (item_score_dict[item] if item in item_score_dict else 0)))
+                n2 += (score - (item_score_dict[item] if item in item_score_dict else 0)) ** 2
+            mae_scores.append(n1 / len(users_items_interst_dict[user]))
+            rmse_scrores.append((n2 / len(users_items_interst_dict[user])) ** 0.5)
+        print(mae_scores)
+        print(rmse_scrores)
+        return sum(mae_scores) / len(mae_scores), sum(rmse_scrores) / len(rmse_scrores)
