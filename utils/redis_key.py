@@ -16,3 +16,11 @@ def key_of_user_cf_user_item_interest(user_id):
 
 def key_of_item_cf_user_item_interest(user_id):
     return "item_cf_user:%s_item_interest" % user_id
+
+
+def key_of_user_cf_user_item_score(user_id):
+    return "user_cf_user:%s_item_score" % user_id
+
+
+def key_of_item_cf_user_item_score(user_id):
+    return "item_cf_user:%s_item_score" % user_id

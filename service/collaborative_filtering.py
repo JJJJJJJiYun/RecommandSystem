@@ -4,6 +4,7 @@ import time
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 from utils.redis import redis
 from utils.redis_key import *
@@ -23,26 +24,48 @@ class CollaborativeFiltering(object):
         # item cf 的 user 打分结果
         self.item_cf_users_items_interest_dict = dict()
 
-    def calculate(self, is_evaluate=False):
+    def calculate(self):
         """后台计算任务"""
         while True:
             # 加载数据
-            if is_evaluate:
-                self.load_movie_data("ratings.csv")
-            else:
-                self.load_data()
+            self.load_data()
             if len(self.user_items_score_dict) > 1 and len(self.item_users_dict):
                 # 进行计算
                 self.user_cf()
-                # self.item_cf()
+                self.item_cf()
             else:
                 time.sleep(30)
-            if is_evaluate:
-                mae_score, rmse_score = self.evaluate(self.user_cf_users_items_interest_dict)
-                print("user cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
-                # mae_score, rmse_score = self.evaluate(self.item_cf_users_items_interest_dict)
-                # print("item cf mae score: %d, rmse score: %d" % (mae_score, rmse_score))
-                exit(0)
+
+    def eval(self):
+        self.load_movie_data("ratings.csv")
+        user_cf_keys = redis.keys(key_of_user_cf_user_item_score('*'))
+        item_cf_keys = redis.keys(key_of_item_cf_user_item_score('*'))
+        if user_cf_keys and item_cf_keys:
+            self.user_cf()
+            self.item_cf()
+            for key in user_cf_keys:
+                user = key.split("_")[-1]
+                self.user_cf_users_items_interest_dict[user] = dict()
+                item_score_tuples = redis.zrange(key, 0, -1, withscores=True)
+                for item, score in item_score_tuples:
+                    self.user_cf_users_items_interest_dict[user][item] = score
+            for key in item_cf_keys:
+                user = key.split("_")[-1]
+                self.item_cf_users_items_interest_dict[user] = dict()
+                item_score_tuples = redis.zrange(key, 0, -1, withscores=True)
+                for item, score in item_score_tuples:
+                    self.item_cf_users_items_interest_dict[user][item] = score
+        else:
+            self.user_cf()
+            self.item_cf()
+        print(sorted(self.user_cf_users_items_interest_dict['1'].items(),
+                     key=lambda d: d[1], reverse=True))
+        print(sorted(self.item_cf_users_items_interest_dict['1'].items(),
+                     key=lambda d: d[1], reverse=True))
+        mae_score, rmse_score = self.evaluate(self.user_cf_users_items_interest_dict)
+        print("user cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
+        mae_score, rmse_score = self.evaluate(self.item_cf_users_items_interest_dict)
+        print("item cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
 
     def load_data(self):
         """加载数据"""
@@ -122,12 +145,14 @@ class CollaborativeFiltering(object):
                 min_score, max_score = min(min_score, score), max(max_score, score)
             users_min_max_score_dict[user1] = (min_score, max_score)
         print("calculate user's interest in items finished")
+        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
+            redis.zadd(key_of_user_cf_user_item_score(user), item_score_dict)
         # print(self.user_cf_users_items_interest_dict)
         # 归一化
-        self.user_cf_users_items_interest_dict = self.normalize(self.user_cf_users_items_interest_dict,
-                                                                users_min_max_score_dict)
+        normalized_users_items_interest_dict = self.normalize(self.user_cf_users_items_interest_dict,
+                                                              users_min_max_score_dict)
         # 结果写入 redis
-        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
+        for user, item_score_dict in normalized_users_items_interest_dict.items():
             redis.zadd(key_of_user_cf_user_item_interest(user), item_score_dict)
             redis.expire(key_of_user_cf_user_item_interest(user), 20)
 
@@ -150,12 +175,14 @@ class CollaborativeFiltering(object):
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user] = (min_score, max_score)
         print("calculate user's interest in items finished")
+        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
+            redis.zadd(key_of_item_cf_user_item_score(user), item_score_dict)
         # print(self.item_cf_users_items_interest_dict)
         # 归一化
-        self.item_cf_users_items_interest_dict = self.normalize(self.item_cf_users_items_interest_dict,
-                                                                user_min_max_score_dict)
+        normalized_users_items_interest_dict = self.normalize(self.item_cf_users_items_interest_dict,
+                                                              user_min_max_score_dict)
         # 结果写入 redis
-        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
+        for user, item_score_dict in normalized_users_items_interest_dict.items():
             redis.zadd(key_of_item_cf_user_item_interest(user), item_score_dict)
             redis.expire(key_of_item_cf_user_item_interest(user), 20)
 
@@ -186,6 +213,7 @@ class CollaborativeFiltering(object):
 
     def calculate_items_nearest_score(self):
         """计算 item 的相似度分数"""
+        count = 0
         item_nearest_score_dict = dict()
         for item1, users1 in self.item_users_dict.items():
             item_nearest_score_dict[item1] = dict()
@@ -200,6 +228,9 @@ class CollaborativeFiltering(object):
                 item_nearest_score_dict[item1][item2] = score
             item_nearest_score_dict[item1] = sorted(item_nearest_score_dict[item1].items(),
                                                     key=lambda d: d[1], reverse=True)
+            count += 1
+            if count % 10 == 0:
+                print("finished %d items" % count)
         print("calculate item nearest score finished")
         # print(item_nearest_score_dict)
         return item_nearest_score_dict
@@ -213,12 +244,12 @@ class CollaborativeFiltering(object):
                 for
                 _, item_score_dict in self.user_items_score_dict.items()]
         pca_data = pca.fit_transform(data)
-        # plt.scatter(pca_data[:, 0], pca_data[:, 1])
-        # plt.show()
+        plt.scatter(pca_data[:, 0], pca_data[:, 1])
+        plt.show()
         # k-means 聚类
         y_pred = KMeans(n_clusters=4).fit_predict(pca_data)
-        # plt.scatter(pca_data[:, 0], pca_data[:, 1], c=y_pred)
-        # plt.show()
+        plt.scatter(pca_data[:, 0], pca_data[:, 1], c=y_pred)
+        plt.show()
         # 收集聚类结果
         for i, (user, _) in enumerate(self.user_items_score_dict.items()):
             user_cluster_result[user] = y_pred[i]
@@ -250,14 +281,16 @@ class CollaborativeFiltering(object):
     def evaluate(self, users_items_interst_dict):
         mae_scores = list()
         rmse_scrores = list()
-        for user, item_score_dict in self.user_items_score_dict.items():
+        for user, item_score_dict in users_items_interst_dict.items():
             n1 = 0
             n2 = 0
-            for item, score in users_items_interst_dict[user].items():
-                n1 += (abs(score - (item_score_dict[item] if item in item_score_dict else 0)))
-                n2 += (score - (item_score_dict[item] if item in item_score_dict else 0)) ** 2
-            mae_scores.append(n1 / len(users_items_interst_dict[user]))
-            rmse_scrores.append((n2 / len(users_items_interst_dict[user])) ** 0.5)
+            for item, score in item_score_dict.items():
+                n1 += abs(
+                    score - (self.user_items_score_dict[user][item] if item in self.user_items_score_dict[user] else 0))
+                n2 += (score - (
+                    self.user_items_score_dict[user][item] if item in self.user_items_score_dict[user] else 0)) ** 2
+            mae_scores.append(n1 / len(item_score_dict))
+            rmse_scrores.append((n2 / len(item_score_dict)) ** 0.5)
         print(mae_scores)
         print(rmse_scrores)
         return sum(mae_scores) / len(mae_scores), sum(rmse_scrores) / len(rmse_scrores)
