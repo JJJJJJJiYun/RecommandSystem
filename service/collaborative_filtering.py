@@ -1,10 +1,10 @@
 import sys
 import time
 
+# import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
 
 from utils.redis import redis
 from utils.redis_key import *
@@ -29,28 +29,26 @@ class CollaborativeFiltering(object):
         while True:
             # 加载数据
             self.load_data()
-            if len(self.user_items_score_dict) > 1 and len(self.item_users_dict):
+            if len(self.user_items_score_dict) > 3 and len(self.item_users_dict):
                 # 进行计算
                 self.user_cf()
                 self.item_cf()
             else:
-                time.sleep(30)
+                time.sleep(10)
 
     def eval(self):
         self.load_movie_data("ratings.csv")
         user_cf_keys = redis.keys(key_of_user_cf_user_item_score('*'))
         item_cf_keys = redis.keys(key_of_item_cf_user_item_score('*'))
         if user_cf_keys and item_cf_keys:
-            self.user_cf()
-            self.item_cf()
             for key in user_cf_keys:
-                user = key.split("_")[-1]
+                user = key.split("_")[2].split(":")[1]
                 self.user_cf_users_items_interest_dict[user] = dict()
                 item_score_tuples = redis.zrange(key, 0, -1, withscores=True)
                 for item, score in item_score_tuples:
                     self.user_cf_users_items_interest_dict[user][item] = score
             for key in item_cf_keys:
-                user = key.split("_")[-1]
+                user = key.split("_")[2].split(":")[1]
                 self.item_cf_users_items_interest_dict[user] = dict()
                 item_score_tuples = redis.zrange(key, 0, -1, withscores=True)
                 for item, score in item_score_tuples:
@@ -58,6 +56,10 @@ class CollaborativeFiltering(object):
         else:
             self.user_cf()
             self.item_cf()
+        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
+            redis.zadd(key_of_user_cf_user_item_score(user), item_score_dict)
+        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
+            redis.zadd(key_of_item_cf_user_item_score(user), item_score_dict)
         print(sorted(self.user_cf_users_items_interest_dict['1'].items(),
                      key=lambda d: d[1], reverse=True))
         print(sorted(self.item_cf_users_items_interest_dict['1'].items(),
@@ -66,6 +68,19 @@ class CollaborativeFiltering(object):
         print("user cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
         mae_score, rmse_score = self.evaluate(self.item_cf_users_items_interest_dict)
         print("item cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
+        average = dict()
+        users = set(self.user_cf_users_items_interest_dict.keys()) | set(self.item_cf_users_items_interest_dict.keys())
+        for user in users:
+            average[user] = dict()
+            items = set(self.user_cf_users_items_interest_dict[user].keys()) | set(
+                self.item_cf_users_items_interest_dict[user].keys())
+            for item in items:
+                average[user][item] = ((self.user_cf_users_items_interest_dict[user][
+                                            item] if item in self.user_cf_users_items_interest_dict else 0) + (
+                                           self.item_cf_users_items_interest_dict[user][
+                                               item] if item in self.item_cf_users_items_interest_dict else 0)) / 2
+        mae_score, rmse_score = self.evaluate(average)
+        print("average cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
 
     def load_data(self):
         """加载数据"""
@@ -145,8 +160,6 @@ class CollaborativeFiltering(object):
                 min_score, max_score = min(min_score, score), max(max_score, score)
             users_min_max_score_dict[user1] = (min_score, max_score)
         print("calculate user's interest in items finished")
-        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
-            redis.zadd(key_of_user_cf_user_item_score(user), item_score_dict)
         # print(self.user_cf_users_items_interest_dict)
         # 归一化
         normalized_users_items_interest_dict = self.normalize(self.user_cf_users_items_interest_dict,
@@ -154,7 +167,6 @@ class CollaborativeFiltering(object):
         # 结果写入 redis
         for user, item_score_dict in normalized_users_items_interest_dict.items():
             redis.zadd(key_of_user_cf_user_item_interest(user), item_score_dict)
-            redis.expire(key_of_user_cf_user_item_interest(user), 20)
 
     def item_cf(self):
         """基于物品的协同过滤算法"""
@@ -175,8 +187,6 @@ class CollaborativeFiltering(object):
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user] = (min_score, max_score)
         print("calculate user's interest in items finished")
-        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
-            redis.zadd(key_of_item_cf_user_item_score(user), item_score_dict)
         # print(self.item_cf_users_items_interest_dict)
         # 归一化
         normalized_users_items_interest_dict = self.normalize(self.item_cf_users_items_interest_dict,
@@ -184,7 +194,6 @@ class CollaborativeFiltering(object):
         # 结果写入 redis
         for user, item_score_dict in normalized_users_items_interest_dict.items():
             redis.zadd(key_of_item_cf_user_item_interest(user), item_score_dict)
-            redis.expire(key_of_item_cf_user_item_interest(user), 20)
 
     def calculate_users_euclidean_distance(self, user_cluster_result, cluster_user_result):
         """计算 user 间的欧式距离"""
@@ -244,12 +253,12 @@ class CollaborativeFiltering(object):
                 for
                 _, item_score_dict in self.user_items_score_dict.items()]
         pca_data = pca.fit_transform(data)
-        plt.scatter(pca_data[:, 0], pca_data[:, 1])
-        plt.show()
+        # plt.scatter(pca_data[:, 0], pca_data[:, 1])
+        # plt.show()
         # k-means 聚类
         y_pred = KMeans(n_clusters=4).fit_predict(pca_data)
-        plt.scatter(pca_data[:, 0], pca_data[:, 1], c=y_pred)
-        plt.show()
+        # plt.scatter(pca_data[:, 0], pca_data[:, 1], c=y_pred)
+        # plt.show()
         # 收集聚类结果
         for i, (user, _) in enumerate(self.user_items_score_dict.items()):
             user_cluster_result[user] = y_pred[i]
