@@ -228,6 +228,10 @@ class CollaborativeFiltering(object):
             item_nearest_score_dict[item1] = dict()
             for item2, users2 in self.item_users_dict.items():
                 if item1 == item2:
+                    # 相同物品的相似度不计算
+                    continue
+                if users1 == users2:
+                    # 相同用户浏览的相似度不计算，不然可能会出现一直给某个用户推荐自己浏览过的物品的情况
                     continue
                 both_count = 0
                 for _, item_score_dict in self.user_items_score_dict.items():
