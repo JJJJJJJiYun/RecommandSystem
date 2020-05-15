@@ -60,25 +60,23 @@ class CollaborativeFiltering(object):
             redis.zadd(key_of_user_cf_user_item_score(user), item_score_dict)
         for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
             redis.zadd(key_of_item_cf_user_item_score(user), item_score_dict)
-        print(sorted(self.user_cf_users_items_interest_dict['1'].items(),
-                     key=lambda d: d[1], reverse=True))
-        print(sorted(self.item_cf_users_items_interest_dict['1'].items(),
-                     key=lambda d: d[1], reverse=True))
+        # print(sorted(self.user_cf_users_items_interest_dict['1'].items(),
+        #              key=lambda d: d[1], reverse=True))
+        # print(sorted(self.item_cf_users_items_interest_dict['1'].items(),
+        #              key=lambda d: d[1], reverse=True))
         mae_score, rmse_score = self.evaluate(self.user_cf_users_items_interest_dict)
         print("user cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
         mae_score, rmse_score = self.evaluate(self.item_cf_users_items_interest_dict)
         print("item cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
         average = dict()
-        users = set(self.user_cf_users_items_interest_dict.keys()) | set(self.item_cf_users_items_interest_dict.keys())
+        users = set(self.user_cf_users_items_interest_dict.keys()) & set(self.item_cf_users_items_interest_dict.keys())
         for user in users:
             average[user] = dict()
-            items = set(self.user_cf_users_items_interest_dict[user].keys()) | set(
+            items = set(self.user_cf_users_items_interest_dict[user].keys()) & set(
                 self.item_cf_users_items_interest_dict[user].keys())
             for item in items:
-                average[user][item] = ((self.user_cf_users_items_interest_dict[user][
-                                            item] if item in self.user_cf_users_items_interest_dict else 0) + (
-                                           self.item_cf_users_items_interest_dict[user][
-                                               item] if item in self.item_cf_users_items_interest_dict else 0)) / 2
+                average[user][item] = (self.user_cf_users_items_interest_dict[user][item] +
+                                       self.item_cf_users_items_interest_dict[user][item]) / 2
         mae_score, rmse_score = self.evaluate(average)
         print("average cf mae score: %f, rmse score: %f" % (mae_score, rmse_score))
 
@@ -297,13 +295,18 @@ class CollaborativeFiltering(object):
         for user, item_score_dict in users_items_interst_dict.items():
             n1 = 0
             n2 = 0
+            n3 = 0
             for item, score in item_score_dict.items():
+                if score == 0 and item not in self.user_items_score_dict[user]:
+                    # 把都等于0的去除，不加入计算
+                    n3 += 1
+                    continue
                 n1 += abs(
                     score - (self.user_items_score_dict[user][item] if item in self.user_items_score_dict[user] else 0))
                 n2 += (score - (
                     self.user_items_score_dict[user][item] if item in self.user_items_score_dict[user] else 0)) ** 2
-            mae_scores.append(n1 / len(item_score_dict))
-            rmse_scrores.append((n2 / len(item_score_dict)) ** 0.5)
+            mae_scores.append(n1 / (len(item_score_dict) - n3))
+            rmse_scrores.append((n2 / (len(item_score_dict) - n3)) ** 0.5)
         print(mae_scores)
         print(rmse_scrores)
         return sum(mae_scores) / len(mae_scores), sum(rmse_scrores) / len(rmse_scrores)
