@@ -38,8 +38,8 @@ class CollaborativeFiltering(object):
 
     def eval(self):
         self.load_movie_data("ratings.csv")
-        user_cf_keys = redis.keys(key_of_user_cf_user_item_score('*'))
-        item_cf_keys = redis.keys(key_of_item_cf_user_item_score('*'))
+        user_cf_keys = redis.keys(key_of_user_cf_user_item_interest('*'))
+        item_cf_keys = redis.keys(key_of_item_cf_user_item_interest('*'))
         if user_cf_keys and item_cf_keys:
             for key in user_cf_keys:
                 user = key.split("_")[2].split(":")[1]
@@ -56,10 +56,6 @@ class CollaborativeFiltering(object):
         else:
             self.user_cf()
             self.item_cf()
-        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
-            redis.zadd(key_of_user_cf_user_item_score(user), item_score_dict)
-        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
-            redis.zadd(key_of_item_cf_user_item_score(user), item_score_dict)
         # print(sorted(self.user_cf_users_items_interest_dict['1'].items(),
         #              key=lambda d: d[1], reverse=True))
         # print(sorted(self.item_cf_users_items_interest_dict['1'].items(),
@@ -158,6 +154,8 @@ class CollaborativeFiltering(object):
                 min_score, max_score = min(min_score, score), max(max_score, score)
             users_min_max_score_dict[user1] = (min_score, max_score)
         print("calculate user's interest in items finished")
+        for user, item_score_dict in self.user_cf_users_items_interest_dict.items():
+            redis.zadd(key_of_user_cf_user_item_score(user), item_score_dict)
         # print(self.user_cf_users_items_interest_dict)
         # 归一化
         normalized_users_items_interest_dict = self.normalize(self.user_cf_users_items_interest_dict,
@@ -185,6 +183,8 @@ class CollaborativeFiltering(object):
                 min_score, max_score = min(min_score, score), max(max_score, score)
             user_min_max_score_dict[user] = (min_score, max_score)
         print("calculate user's interest in items finished")
+        for user, item_score_dict in self.item_cf_users_items_interest_dict.items():
+            redis.zadd(key_of_item_cf_user_item_score(user), item_score_dict)
         # print(self.item_cf_users_items_interest_dict)
         # 归一化
         normalized_users_items_interest_dict = self.normalize(self.item_cf_users_items_interest_dict,
@@ -297,6 +297,7 @@ class CollaborativeFiltering(object):
             n2 = 0
             n3 = 0
             for item, score in item_score_dict.items():
+                score = score * 5
                 if score == 0 and item not in self.user_items_score_dict[user]:
                     # 把都等于0的去除，不加入计算
                     n3 += 1
